@@ -38,7 +38,7 @@ func (r *MobiReader) Parse() (err error) {
 	}
 
 	// Check if INDX offset is set + attempt to parse INDX
-	if r.Header.IndxRecodOffset > 0 {
+	if r.Header.IndxRecodOffset > 0 && r.Header.IndxRecodOffset != 4294967295 {
 		err = r.parseIndexRecord(r.Header.IndxRecodOffset)
 		if err != nil {
 			return
@@ -162,12 +162,14 @@ func (r *MobiReader) parseIndexRecord(n uint32) error {
 
 	/* Ordt Record Parsing */
 	if idx.Idxt_Encoding == MOBI_ENC_UTF16 || idx.Ordt_Entries_Count > 0 {
-		return errors.New("ORDT parser not implemented")
+		// ignore
+		//return errors.New("ORDT parser not implemented")
 	}
 
 	/* Ligt Record Parsing */
 	if idx.Ligt_Entries_Count > 0 {
-		return errors.New("LIGT parser not implemented")
+		// ignore
+		//return errors.New("LIGT parser not implemented")
 	}
 
 	/* Idxt Record Parsing */
@@ -206,7 +208,7 @@ func (r *MobiReader) parseIndexRecord(n uint32) error {
 
 			PTagxData := make([]uint8, PTagxLen1)
 			r.file.Read(PTagxData)
-			fmt.Printf("\n------ %v --------\n", i)
+			//fmt.Printf("\n------ %v --------\n", i)
 			r.parsePtagx(PTagxData)
 			Count++
 			//fmt.Printf("Len: %v | Label: %s | %v\n", PTagxLen, PTagxLabel, Count)
@@ -261,7 +263,7 @@ func (r *MobiReader) ExthParse() error {
 	binary.Read(r.file, binary.BigEndian, &r.Exth.RecordCount)
 
 	r.Exth.Records = make([]mobiExthRecord, r.Exth.RecordCount)
-	for i, _ := range r.Exth.Records {
+	for i := range r.Exth.Records {
 		binary.Read(r.file, binary.BigEndian, &r.Exth.Records[i].RecordType)
 		binary.Read(r.file, binary.BigEndian, &r.Exth.Records[i].RecordLength)
 
@@ -284,11 +286,11 @@ func (r *MobiReader) ExthParse() error {
 	return nil
 }
 
-// OffsetToRecord sets reading position to record N, returns total record lenght
+// OffsetToRecord set s reading position to record N, returns total record lenght
 func (r *MobiReader) OffsetToRecord(nu uint32) (uint32, error) {
 	n := int(nu)
 	if n > int(r.Pdf.RecordsNum)-1 {
-		return 0, errors.New("Record ID requested is greater than total amount of records")
+		return 0, fmt.Errorf("Record ID requested (%d) is greater than total amount of records (%d)",n,int(r.Pdf.RecordsNum))
 	}
 
 	RecLen := uint32(0)
@@ -327,14 +329,14 @@ func (r *MobiReader) parseTagx() error {
 		}
 	}
 
-	fmt.Println("TagX called")
+	//fmt.Println("TagX called")
 	// PrintStruct(r.Tagx)
 
 	return nil
 }
 
 func (r *MobiReader) parseIdxt(IdxtCount uint32) error {
-	fmt.Println("parseIdxt called")
+	//fmt.Println("parseIdxt called")
 	if !r.MatchMagic(magicIdxt) {
 		return errors.New("IDXT record not found at given offset.")
 	}
@@ -410,21 +412,21 @@ func (r *MobiReader) parsePtagx(data []byte) {
 			//fmt.Printf("TAGX %v %v VC:%v VB:%v\n", x.Tag, x.TagNum, value_count, value_bytes)
 		}
 	}
-	fmt.Printf("%+v", Ptagx)
+	//fmt.Printf("%+v", Ptagx)
 	var IndxEntry []mobiIndxEntry
-	for iz, x := range Ptagx {
+	for _, x := range Ptagx {
 		var values []uint32
 
 		if x.Value_Count != 0 {
 			// Read value_count * values_per_entry variable width values.
-			fmt.Printf("\nDec: ")
+			//fmt.Printf("\nDec: ")
 			for i := 0; i < int(x.Value_Count)*int(x.Tag_Value_Count); i++ {
 				byts, consumed := vwiDec(data, true)
 				data = data[consumed:]
 
 				values = append(values, byts)
 				IndxEntry = append(IndxEntry, mobiIndxEntry{x.Tag, byts})
-				fmt.Printf("%v %s: %v ", iz, tagEntryMap[x.Tag], byts)
+				//fmt.Printf("%v %s: %v ", iz, tagEntryMap[x.Tag], byts)
 			}
 		} else {
 			// Convert value_bytes to variable width values.
@@ -447,5 +449,5 @@ func (r *MobiReader) parsePtagx(data []byte) {
 			}
 		}
 	}
-	fmt.Println("---------------------------")
+	//fmt.Println("---------------------------")
 }
