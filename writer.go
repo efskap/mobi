@@ -78,6 +78,20 @@ func NewWriter(filename string) (writer *MobiWriter, err error) {
 	return
 }
 
+func (w *MobiWriter) Close() error {
+	if w.file == nil {
+		return os.ErrClosed
+	}
+
+	if err := w.file.Close(); err != nil {
+		return err
+	}
+	w.file = nil
+
+	return nil
+}
+
+
 func (w *MobiWriter) Title(i string) *MobiWriter {
 	w.title = i
 	return w
@@ -103,7 +117,7 @@ func (w *MobiWriter) Write() {
 	// Generate HTML file
 	w.bookHtml = new(bytes.Buffer)
 	w.bookHtml.WriteString("<html><head></head><body>")
-	for i, _ := range w.chapters {
+	for i := range w.chapters {
 		w.chapters[i].generateHTML(w.bookHtml)
 	}
 	w.bookHtml.WriteString("</body></html>")
@@ -275,7 +289,7 @@ func (w *MobiWriter) generateCNCX() {
 		if node.SubChapterCount() > 0 {
 			ch1 := Id
 			chN := Id + node.SubChapterCount() - 1
-			fmt.Printf("Parent: %v %v %v [CHILDREN: %v %v]\n", Id, node.SubChapterCount(), node.Title, ch1, chN)
+			//fmt.Printf("Parent: %v %v %v [CHILDREN: %v %v]\n", Id, node.SubChapterCount(), node.Title, ch1, chN)
 			Id += node.SubChapterCount()
 
 			CNCX_ID := fmt.Sprintf("%03v", Id)
@@ -303,7 +317,7 @@ func (w *MobiWriter) generateCNCX() {
 			w.cncxBuffer.WriteString(CNCX_ID)                  // ID
 			w.cncxBuffer.WriteByte(controlByte(TagxSingle)[0]) // Controll Byte
 			w.cncxBuffer.Write(vwiEncInt(node.RecordOffset))   // Record offset
-			fmt.Printf("Offset: %v", node.RecordOffset)
+			//fmt.Printf("Offset: %v", node.RecordOffset)
 			w.cncxBuffer.Write(vwiEncInt(node.Len))                // Lenght of a record
 			w.cncxBuffer.Write(vwiEncInt(w.cncxLabelBuffer.Len())) // Label Offset 	// Offset relative to CNXC record
 			w.cncxLabelBuffer.Write(vwiEncInt(len(node.Title)))    // CNCXLabel lenght
@@ -317,7 +331,7 @@ func (w *MobiWriter) generateCNCX() {
 
 	for i, node := range w.chapters {
 		for _, child := range node.SubChapters {
-			fmt.Printf("Child: %v %v %v\n", Id, i, child.Title)
+			//fmt.Printf("Child: %v %v %v\n", Id, i, child.Title)
 			CNCX_ID := fmt.Sprintf("%03v", w.chapterCount)
 			//				fmt.Printf("Node: %v\n", CNCX_ID)
 			w.Idxt.Offset = append(w.Idxt.Offset, uint16(MOBI_INDX_HEADER_LEN+w.cncxBuffer.Len()))
