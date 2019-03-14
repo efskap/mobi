@@ -7,10 +7,77 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"image"
+	"io"
 )
 
 type MobiReader struct {
 	Mobi
+
+	fullName string		// full name of the book (from the main header)
+
+	sample bool
+	startReading int64 // Start offset //Position (4-byte offset) in file at which to open when first opened /**< Start reading */
+	coverOffset int64
+	coverLength int64
+	thumbOffset int64
+	thumbLength int64
+	hasFakeCover bool
+	creatorSoft int64 // Creator Software
+	creatorMajor int64 // Creator Major Version
+	creatorMinor int64 // Creator Minor Version
+	creatorBuild int64 // Creator Build Number
+	creatorBuildRev string // Kindlegen BuildRev Number
+	clippingLimit int64 // Clipping Limit
+	publisherLimit int64 // Publisher Limit
+	ttsDisable bool // Text-to-Speech Disabled
+	rental bool // Rental Indicator
+	drmServer string // DRM Server ID
+	drmCommerce string // DRM Commerce ID
+	drmEbookbase string // DRM Ebookbase Book ID
+	title string // Title
+	authors []string // Creator
+	publisher string // Publisher
+	imprint string // Imprint
+	description string // Description
+	isbn string // ISBN
+	subjects []string // Subject
+	publishingDate string // Published
+	review string // Review
+	contributor string // Contributor
+	rights string // Rights
+	subjectCode string // Subject Code
+	typeStr string // Type
+	source string // Source
+	asin string // ASIN Kindle Paperwhite labels books with "Personal" if they don't have this record.
+	version string // Version Number
+	adult bool // Adult Mobipocket Creator adds this if Adult only is checked on its GUI; contents: "yes" /**< <adult> */
+	price string // Price // As text, e.g. "4.99" /**< <srp> */
+	currency string // Currency // As text, e.g. "USD" /**< <srp currency="currency"> */
+	fixedLayout string // Fixed Layout
+	bookType string // Book Type
+	orientationLock string // Orientation Lock
+	origResolution string // Original Resolution
+	zeroGutter string // Zero Gutter
+	zeroMargin string // Zero margin
+	kf8CoverUri string // K8 Masthead/Cover Image
+	regionMagni string // Region Magnification
+	dictName string // Dictionary Short Name
+	watermark string // Watermark
+	docType string // Document Type
+	lastUpdate string // Last Update Time
+	updatedTitle string // Updated Title
+	asin504 string // ASIN (504)
+	titleFileAs string // Title File As
+	creatorFileAs string // Creator File As
+	publisherFileAs string // Publisher File As
+	language string // Language
+	alignment string // Primary Writing Mode
+	pageDir string // Page Progression Direction
+	overrideFonts string // Override Kindle Fonts
+	sourceDesc string // Original Source description
+	dictLangIn string // Dictionary Input Language
+	dictLangOut string // Dictionary output Language
 }
 
 func NewReader(filename string) (out *MobiReader, err error) {
@@ -25,10 +92,23 @@ func NewReader(filename string) (out *MobiReader, err error) {
 		return nil, err
 	}
 
-	return out, out.Parse()
+	return out, out.parse()
 }
 
-func (r *MobiReader) Parse() (err error) {
+func (r *MobiReader) Close() error {
+	if r.file == nil {
+		return os.ErrClosed
+	}
+
+	if err := r.file.Close(); err != nil {
+		return err
+	}
+	r.file = nil
+
+	return nil
+}
+
+func (r *MobiReader) parse() (err error) {
 	if err = r.parsePdf(); err != nil {
 		return
 	}
@@ -86,11 +166,18 @@ func (r *MobiReader) parsePdh() error {
 
 	// Mobi Header
 	// Now it's time to read Mobi Header
-	if r.MatchMagic(magicMobi) {
+	if r.matchMagic(magicMobi) {
 		binary.Read(r.file, binary.BigEndian, &r.Header)
 	} else {
 		return errors.New("Can not find MOBI header. File might be corrupt.")
 	}
+
+	/*
+	log.Printf("Full name: ")
+	FullNameOffset      uint32   // Offset in record 0 (not from start of file) of the full name of the book
+	FullNameLength      uint32   // Length in bytes of the full name of the book
+	*/
+
 
 	// Current header struct only reads 232 bytes. So if actual header lenght is greater, then we need to skip to Exth.
 	Skip := int64(r.Header.HeaderLength) - int64(reflect.TypeOf(r.Header).Size())
@@ -99,12 +186,26 @@ func (r *MobiReader) parsePdh() error {
 	// Exth Record
 	// To check whenever there's EXTH record or not, we need to check and see if 6th bit of r.Header.ExthFlags is set.
 	if hasBit(int(r.Header.ExthFlags), 6) {
-		err := r.ExthParse()
+		err := r.exthParse()
 
 		if err != nil {
 			return errors.New("Can not read EXTH record")
 		}
+
+		r.populateMetadata()
 	}
+
+	if r.Header.FullNameLength>0 {
+		name := make([]byte, r.Header.FullNameLength)
+		_, err := r.file.Seek(int64(r.Offsets[0].Offset+r.Header.FullNameOffset), 0)
+		if err == nil {
+			_, err = r.file.Read(name)
+			if err == nil {
+				r.fullName = string(name)
+			}
+		}
+	}
+
 
 	return nil
 }
@@ -117,7 +218,7 @@ func (r *MobiReader) parseIndexRecord(n uint32) error {
 
 	RecPos, _ := r.file.Seek(0, 1)
 
-	if !r.MatchMagic(magicIndx) {
+	if !r.matchMagic(magicIndx) {
 		return errors.New("Index record not found at specified at given offset")
 	}
 	//fmt.Printf("Index %s %v\n", r.Peek(4), RecLen)
@@ -235,16 +336,16 @@ func (r *MobiReader) parseIndexRecord(n uint32) error {
 	return nil
 }
 
-// MatchMagic matches next N bytes (based on lenght of magic word)
-func (r *MobiReader) MatchMagic(magic mobiMagicType) bool {
-	if r.Peek(len(magic)).Magic() == magic {
+// matchMagic matches next N bytes (based on lenght of magic word)
+func (r *MobiReader) matchMagic(magic mobiMagicType) bool {
+	if r.peek(len(magic)).Magic() == magic {
 		return true
 	}
 	return false
 }
 
-// Peek returns next N bytes without advancing the reader.
-func (r *MobiReader) Peek(n int) Peeker {
+// peek returns next N bytes without advancing the reader.
+func (r *MobiReader) peek(n int) Peeker {
 	buf := make([]uint8, n)
 	r.file.Read(buf)
 	r.file.Seek(int64(n)*-1, 1)
@@ -252,9 +353,9 @@ func (r *MobiReader) Peek(n int) Peeker {
 }
 
 // Parse reads/parses Exth meta data records from file
-func (r *MobiReader) ExthParse() error {
+func (r *MobiReader) exthParse() error {
 	// If next 4 bytes are not EXTH then we have a problem
-	if !r.MatchMagic(magicExth) {
+	if !r.matchMagic(magicExth) {
 		return errors.New("Currect reading position does not contain EXTH record")
 	}
 
@@ -306,7 +407,7 @@ func (r *MobiReader) OffsetToRecord(nu uint32) (uint32, error) {
 }
 
 func (r *MobiReader) parseTagx() error {
-	if !r.MatchMagic(magicTagx) {
+	if !r.matchMagic(magicTagx) {
 		return errors.New("TAGX record not found at given offset.")
 	}
 
@@ -337,7 +438,7 @@ func (r *MobiReader) parseTagx() error {
 
 func (r *MobiReader) parseIdxt(IdxtCount uint32) error {
 	//fmt.Println("parseIdxt called")
-	if !r.MatchMagic(magicIdxt) {
+	if !r.matchMagic(magicIdxt) {
 		return errors.New("IDXT record not found at given offset.")
 	}
 
@@ -451,3 +552,472 @@ func (r *MobiReader) parsePtagx(data []byte) {
 	}
 	//fmt.Println("---------------------------")
 }
+
+func rvToInt(v []uint8) int64 {
+	switch(len(v)) {
+		case 1:
+			return int64(v[0])
+		case 2:
+			return int64(binary.BigEndian.Uint16([]byte(v)))
+		case 4:
+			return int64(binary.BigEndian.Uint32([]byte(v)))
+		case 8:
+			return int64(binary.BigEndian.Uint64([]byte(v)))
+		default:
+			return 0
+	}
+}
+
+func rvToBool(v []uint8) bool {
+	return rvToInt(v) != 0
+}
+
+func rvToStringAppend(v []uint8, existing string) string {
+	if len(existing)>0 {
+		return existing+"; "+string(v)
+	} else {
+		return string(v)
+	}
+}
+
+func (r *MobiReader) rvToImageOffset(v []uint8) (int64, int64) {
+	imageOffset := int64(0)
+	imageLength := int64(0)
+
+	imagePDBOffset := r.Header.FirstImageIndex + uint32(rvToInt(v))
+
+	n := int(imagePDBOffset)
+	if n <= int(r.Pdf.RecordsNum)-1 {
+		imageOffset = int64(r.Offsets[n].Offset)
+		if n+1 < int(r.Pdf.RecordsNum) {
+			imageLength = int64(r.Offsets[n+1].Offset) - imageOffset
+		} else {
+			imageLength = r.fileStat.Size() - imageOffset
+		}
+	}
+
+	return imageOffset, imageLength
+}
+
+func (r *MobiReader) populateMetadata() {
+	for _, rec := range r.Exth.Records {
+		switch rec.RecordType {
+		case EXTH_COVEROFFSET:
+			r.coverOffset, r.coverLength = r.rvToImageOffset(rec.Value)
+		case EXTH_THUMBOFFSET:
+			r.thumbOffset, r.thumbLength = r.rvToImageOffset(rec.Value)
+		case EXTH_SAMPLE:
+			r.sample = rvToBool(rec.Value)
+		case EXTH_STARTREADING:
+			r.startReading = rvToInt(rec.Value)
+		case EXTH_HASFAKECOVER:
+			r.hasFakeCover = rvToBool(rec.Value)
+		case EXTH_CREATORSOFT:
+			r.creatorSoft = rvToInt(rec.Value)
+		case EXTH_CREATORMAJOR:
+			r.creatorMajor = rvToInt(rec.Value)
+		case EXTH_CREATORMINOR:
+			r.creatorMinor = rvToInt(rec.Value)
+		case EXTH_CREATORBUILD:
+			r.creatorBuild = rvToInt(rec.Value)
+		case EXTH_CREATORBUILDREV:
+			r.creatorBuildRev = rvToStringAppend(rec.Value,r.creatorBuildRev)
+		case EXTH_CLIPPINGLIMIT:
+			r.clippingLimit = rvToInt(rec.Value)
+		case EXTH_PUBLISHERLIMIT:
+			r.publisherLimit = rvToInt(rec.Value)
+		case EXTH_TTSDISABLE:
+			r.ttsDisable = rvToBool(rec.Value)
+		case EXTH_RENTAL:
+			r.rental = rvToBool(rec.Value)
+		case EXTH_DRMSERVER:
+			r.drmServer = rvToStringAppend(rec.Value,r.drmServer)
+		case EXTH_DRMCOMMERCE:
+			r.drmCommerce = rvToStringAppend(rec.Value,r.drmCommerce)
+		case EXTH_DRMEBOOKBASE:
+			r.drmEbookbase = rvToStringAppend(rec.Value,r.drmEbookbase)
+		case EXTH_TITLE:
+			r.title = rvToStringAppend(rec.Value,r.title)
+		case EXTH_AUTHOR:
+			r.authors = append(r.authors,string(rec.Value))
+		case EXTH_PUBLISHER:
+			r.publisher = rvToStringAppend(rec.Value,r.publisher)
+		case EXTH_IMPRINT:
+			r.imprint = rvToStringAppend(rec.Value,r.imprint)
+		case EXTH_DESCRIPTION:
+			r.description = rvToStringAppend(rec.Value,r.description)
+		case EXTH_ISBN:
+			r.isbn = rvToStringAppend(rec.Value,r.isbn)
+		case EXTH_SUBJECT:
+			r.subjects = append(r.subjects,string(rec.Value))
+		case EXTH_PUBLISHINGDATE:
+			r.publishingDate = rvToStringAppend(rec.Value,r.publishingDate)
+		case EXTH_REVIEW:
+			r.review = rvToStringAppend(rec.Value,r.review)
+		case EXTH_CONTRIBUTOR:
+			r.contributor = rvToStringAppend(rec.Value,r.contributor)
+		case EXTH_RIGHTS:
+			r.rights = rvToStringAppend(rec.Value,r.rights)
+		case EXTH_SUBJECTCODE:
+			r.subjectCode = rvToStringAppend(rec.Value,r.subjectCode)
+		case EXTH_TYPE:
+			r.typeStr = rvToStringAppend(rec.Value,r.typeStr)
+		case EXTH_SOURCE:
+			r.source = rvToStringAppend(rec.Value,r.source)
+		case EXTH_ASIN:
+			r.asin = rvToStringAppend(rec.Value,r.asin)
+		case EXTH_VERSION:
+			r.version = rvToStringAppend(rec.Value,r.version)
+		case EXTH_ADULT:
+			r.adult = rvToBool(rec.Value)
+		case EXTH_PRICE:
+			r.price = rvToStringAppend(rec.Value,r.price)
+		case EXTH_CURRENCY:
+			r.currency = rvToStringAppend(rec.Value,r.currency)
+		case EXTH_FIXEDLAYOUT:
+			r.fixedLayout = rvToStringAppend(rec.Value,r.fixedLayout)
+		case EXTH_BOOKTYPE:
+			r.bookType = rvToStringAppend(rec.Value,r.bookType)
+		case EXTH_ORIENTATIONLOCK:
+			r.orientationLock = rvToStringAppend(rec.Value,r.orientationLock)
+		case EXTH_ORIGRESOLUTION:
+			r.origResolution = rvToStringAppend(rec.Value,r.origResolution)
+		case EXTH_ZEROGUTTER:
+			r.zeroGutter = rvToStringAppend(rec.Value,r.zeroGutter)
+		case EXTH_ZEROMARGIN:
+			r.zeroMargin = rvToStringAppend(rec.Value,r.zeroMargin)
+		case EXTH_KF8COVERURI:
+			r.kf8CoverUri = rvToStringAppend(rec.Value,r.kf8CoverUri)
+		case EXTH_REGIONMAGNI:
+			r.regionMagni = rvToStringAppend(rec.Value,r.regionMagni)
+		case EXTH_DICTNAME:
+			r.dictName = rvToStringAppend(rec.Value,r.dictName)
+		case EXTH_WATERMARK:
+			r.watermark = rvToStringAppend(rec.Value,r.watermark)
+		case EXTH_DOCTYPE:
+			r.docType = rvToStringAppend(rec.Value,r.docType)
+		case EXTH_LASTUPDATE:
+			r.lastUpdate = rvToStringAppend(rec.Value,r.lastUpdate)
+		case EXTH_UPDATEDTITLE:
+			r.updatedTitle = rvToStringAppend(rec.Value,r.updatedTitle)
+		case EXTH_ASIN504:
+			r.asin504 = rvToStringAppend(rec.Value,r.asin504)
+		case EXTH_TITLEFILEAS:
+			r.titleFileAs = rvToStringAppend(rec.Value,r.titleFileAs)
+		case EXTH_CREATORFILEAS:
+			r.creatorFileAs = rvToStringAppend(rec.Value,r.creatorFileAs)
+		case EXTH_PUBLISHERFILEAS:
+			r.publisherFileAs = rvToStringAppend(rec.Value,r.publisherFileAs)
+		case EXTH_LANGUAGE:
+			r.language = rvToStringAppend(rec.Value,r.language)
+		case EXTH_ALIGNMENT:
+			r.alignment = rvToStringAppend(rec.Value,r.alignment)
+		case EXTH_PAGEDIR:
+			r.pageDir = rvToStringAppend(rec.Value,r.pageDir)
+		case EXTH_OVERRIDEFONTS:
+			r.overrideFonts = rvToStringAppend(rec.Value,r.overrideFonts)
+		case EXTH_SORCEDESC:
+			r.sourceDesc = rvToStringAppend(rec.Value,r.sourceDesc)
+		case EXTH_DICTLANGIN:
+			r.dictLangIn = rvToStringAppend(rec.Value,r.dictLangIn)
+		case EXTH_DICTLANGOUT:
+			r.dictLangOut = rvToStringAppend(rec.Value,r.dictLangOut)
+		}
+	}
+
+}
+
+func (r *MobiReader) BestTitle() string {
+	if len(r.updatedTitle)>0 {
+		return r.updatedTitle
+
+	} else if len(r.title)>0 {
+		return r.title
+
+	} else {
+		return r.fullName
+	}
+}
+
+func (r *MobiReader) FullName() string {
+	return r.fullName
+}
+
+func (r *MobiReader) Sample() bool {
+	return r.sample
+}
+
+func (r *MobiReader) StartReading() int64 {
+	return r.startReading
+}
+
+func (r *MobiReader) CoverOffsetLength() (int64, int64) {
+	return r.coverOffset, r.coverLength
+}
+
+func (r *MobiReader) image(offset, length int64) (image.Image, error) {
+	if r.file == nil {
+		return nil, os.ErrClosed
+	}
+
+	var i image.Image
+	var err error
+
+	if _, err := r.file.Seek(offset, 0); err != nil {
+		return nil, err
+	}
+
+	ltd := io.LimitReader(r.file,length)
+	if i, _, err = image.Decode(ltd); err != nil {
+		return nil, err
+	}
+
+	return i, nil
+
+}
+
+func (r *MobiReader) HasCover() bool {
+	return r.coverOffset > 0
+}
+
+func (r *MobiReader) Cover() (image.Image, error) {
+	return r.image(r.CoverOffsetLength())
+}
+
+func (r *MobiReader) ThumbnailOffsetLength() (int64, int64) {
+	return r.thumbOffset, r.thumbLength
+}
+
+func (r *MobiReader) HasThumbnail() bool {
+	return r.thumbOffset > 0
+}
+
+func (r *MobiReader) Thumbnail() (image.Image, error) {
+	return r.image(r.ThumbnailOffsetLength())
+}
+
+
+func (r *MobiReader) HasFakeCover() bool {
+	return r.hasFakeCover
+}
+
+func (r *MobiReader) CreatorSoft() int64 {
+	return r.creatorSoft
+}
+
+func (r *MobiReader) CreatorMajor() int64 {
+	return r.creatorMajor
+}
+
+func (r *MobiReader) CreatorMinor() int64 {
+	return r.creatorMinor
+}
+
+func (r *MobiReader) CreatorBuild() int64 {
+	return r.creatorBuild
+}
+
+func (r *MobiReader) CreatorBuildRev() string {
+	return r.creatorBuildRev
+}
+
+func (r *MobiReader) ClippingLimit() int64 {
+	return r.clippingLimit
+}
+
+func (r *MobiReader) PublisherLimit() int64 {
+	return r.publisherLimit
+}
+
+func (r *MobiReader) TtsDisable() bool {
+	return r.ttsDisable
+}
+
+func (r *MobiReader) Rental() bool {
+	return r.rental
+}
+
+func (r *MobiReader) DrmServer() string {
+	return r.drmServer
+}
+
+func (r *MobiReader) DrmCommerce() string {
+	return r.drmCommerce
+}
+
+func (r *MobiReader) DrmEbookbase() string {
+	return r.drmEbookbase
+}
+
+func (r *MobiReader) Title() string {
+	return r.title
+}
+
+func (r *MobiReader) Authors() []string {
+	return r.authors
+}
+
+func (r *MobiReader) Publisher() string {
+	return r.publisher
+}
+
+func (r *MobiReader) Imprint() string {
+	return r.imprint
+}
+
+func (r *MobiReader) Description() string {
+	return r.description
+}
+
+func (r *MobiReader) Isbn() string {
+	return r.isbn
+}
+
+func (r *MobiReader) Subjects() []string {
+	return r.subjects
+}
+
+func (r *MobiReader) PublishingDate() string {
+	return r.publishingDate
+}
+
+func (r *MobiReader) Review() string {
+	return r.review
+}
+
+func (r *MobiReader) Contributor() string {
+	return r.contributor
+}
+
+func (r *MobiReader) Rights() string {
+	return r.rights
+}
+
+func (r *MobiReader) SubjectCode() string {
+	return r.subjectCode
+}
+
+func (r *MobiReader) TypeStr() string {
+	return r.typeStr
+}
+
+func (r *MobiReader) Source() string {
+	return r.source
+}
+
+func (r *MobiReader) Asin() string {
+	return r.asin
+}
+
+func (r *MobiReader) Version() string {
+	return r.version
+}
+
+func (r *MobiReader) Adult() bool {
+	return r.adult
+}
+
+func (r *MobiReader) Price() string {
+	return r.price
+}
+
+func (r *MobiReader) Currency() string {
+	return r.currency
+}
+
+func (r *MobiReader) FixedLayout() string {
+	return r.fixedLayout
+}
+
+func (r *MobiReader) BookType() string {
+	return r.bookType
+}
+
+func (r *MobiReader) OrientationLock() string {
+	return r.orientationLock
+}
+
+func (r *MobiReader) OrigResolution() string {
+	return r.origResolution
+}
+
+func (r *MobiReader) ZeroGutter() string {
+	return r.zeroGutter
+}
+
+func (r *MobiReader) ZeroMargin() string {
+	return r.zeroMargin
+}
+
+func (r *MobiReader) Kf8CoverUri() string {
+	return r.kf8CoverUri
+}
+
+func (r *MobiReader) RegionMagni() string {
+	return r.regionMagni
+}
+
+func (r *MobiReader) DictName() string {
+	return r.dictName
+}
+
+func (r *MobiReader) Watermark() string {
+	return r.watermark
+}
+
+func (r *MobiReader) DocType() string {
+	return r.docType
+}
+
+func (r *MobiReader) LastUpdate() string {
+	return r.lastUpdate
+}
+
+func (r *MobiReader) UpdatedTitle() string {
+	return r.updatedTitle
+}
+
+func (r *MobiReader) Asin504() string {
+	return r.asin504
+}
+
+func (r *MobiReader) TitleFileAs() string {
+	return r.titleFileAs
+}
+
+func (r *MobiReader) CreatorFileAs() string {
+	return r.creatorFileAs
+}
+
+func (r *MobiReader) PublisherFileAs() string {
+	return r.publisherFileAs
+}
+
+func (r *MobiReader) Language() string {
+	return r.language
+}
+
+func (r *MobiReader) Alignment() string {
+	return r.alignment
+}
+
+func (r *MobiReader) PageDir() string {
+	return r.pageDir
+}
+
+func (r *MobiReader) OverrideFonts() string {
+	return r.overrideFonts
+}
+
+func (r *MobiReader) SourceDesc() string {
+	return r.sourceDesc
+}
+
+func (r *MobiReader) DictLangIn() string {
+	return r.dictLangIn
+}
+
+func (r *MobiReader) DictLangOut() string {
+	return r.dictLangOut
+}
+
