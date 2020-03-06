@@ -1,6 +1,7 @@
 package mobi
 
-import (
+import
+(
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"image"
 	"io"
+	"unsafe"
 )
 
 type MobiReader struct {
@@ -141,6 +143,10 @@ func (r *MobiReader) parsePdf() error {
 		return errors.New("Number of records in this file is less than 1.")
 	}
 
+	if int64(r.Pdf.RecordsNum) * int64(unsafe.Sizeof(mobiRecordOffset{})) > r.fileStat.Size() {
+		return fmt.Errorf("recordsnum count %d would exceed size of PDF",r.Pdf.RecordsNum)
+	}
+
 	r.Offsets = make([]mobiRecordOffset, r.Pdf.RecordsNum)
 	err = binary.Read(r.file, binary.BigEndian, &r.Offsets)
 	if err != nil {
@@ -196,6 +202,9 @@ func (r *MobiReader) parsePdh() error {
 	}
 
 	if r.Header.FullNameLength>0 {
+		if int64(r.Header.FullNameLength) > r.fileStat.Size() {
+			return fmt.Errorf("mobi header fullname length of %d exceeds input file size",r.Header.FullNameLength)
+		}
 		name := make([]byte, r.Header.FullNameLength)
 		_, err := r.file.Seek(int64(r.Offsets[0].Offset+r.Header.FullNameOffset), 0)
 		if err == nil {
@@ -251,6 +260,9 @@ func (r *MobiReader) parseIndexRecord(n uint32) error {
 			r.Cncx = mobiCncx{}
 			binary.Read(r.file, binary.BigEndian, &r.Cncx.Len)
 
+			if int64(r.Cncx.Len) > r.fileStat.Size() {
+				return fmt.Errorf("cncx length of %d exceeds input file size",r.Cncx.Len)
+			}
 			r.Cncx.Id = make([]uint8, r.Cncx.Len)
 			binary.Read(r.file, binary.LittleEndian, &r.Cncx.Id)
 			r.file.Seek(1, 1) //Skip 0x0 termination
@@ -298,6 +310,10 @@ func (r *MobiReader) parseIndexRecord(n uint32) error {
 			// Read Byte containing the lenght of a label
 			r.file.Read(PTagxLen)
 
+			if int64(PTagxLen[0]) > r.fileStat.Size() {
+				return fmt.Errorf("tagx len of %d exceeds input file size",PTagxLen[0])
+			}
+
 			// Read label
 			PTagxLabel := make([]uint8, PTagxLen[0])
 			r.file.Read(PTagxLabel)
@@ -305,6 +321,10 @@ func (r *MobiReader) parseIndexRecord(n uint32) error {
 			PTagxLen1 := uint16(idx.Idxt_Offset) - r.Idxt.Offset[i]
 			if i+1 < len(r.Idxt.Offset) {
 				PTagxLen1 = r.Idxt.Offset[i+1] - r.Idxt.Offset[i]
+			}
+
+			if int64(PTagxLen1) > r.fileStat.Size() {
+				return fmt.Errorf("tagx data len of %d exceeds input file size",PTagxLen1)
 			}
 
 			PTagxData := make([]uint8, PTagxLen1)
@@ -346,6 +366,9 @@ func (r *MobiReader) matchMagic(magic mobiMagicType) bool {
 
 // peek returns next N bytes without advancing the reader.
 func (r *MobiReader) peek(n int) Peeker {
+	if int64(n) > r.fileStat.Size() {
+		return []uint8{}
+	}
 	buf := make([]uint8, n)
 	r.file.Read(buf)
 	r.file.Seek(int64(n)*-1, 1)
@@ -368,7 +391,13 @@ func (r *MobiReader) exthParse() error {
 		binary.Read(r.file, binary.BigEndian, &r.Exth.Records[i].RecordType)
 		binary.Read(r.file, binary.BigEndian, &r.Exth.Records[i].RecordLength)
 
-		r.Exth.Records[i].Value = make([]uint8, r.Exth.Records[i].RecordLength-8)
+		sliceRecords := r.Exth.Records[i].RecordLength
+		if sliceRecords < 8 {
+			sliceRecords = 8
+		} else if int64(sliceRecords) > r.fileStat.Size() {
+			return fmt.Errorf("exth record count of %d exceeds input file size",sliceRecords)
+		}
+		r.Exth.Records[i].Value = make([]uint8, sliceRecords-8)
 
 		Tag := getExthMetaByTag(r.Exth.Records[i].RecordType)
 		switch Tag.Type {
@@ -421,6 +450,10 @@ func (r *MobiReader) parseTagx() error {
 	binary.Read(r.file, binary.BigEndian, &r.Tagx.ControlByteCount)
 
 	TagCount := (r.Tagx.HeaderLenght - 12) / 4
+
+	if int64(TagCount) * int64(unsafe.Sizeof(mobiTagxTags{})) > r.fileStat.Size() {
+		return fmt.Errorf("TAGX tag count of %d exceeds input file size",TagCount)
+	}
 	r.Tagx.Tags = make([]mobiTagxTags, TagCount)
 
 	for i := 0; i < int(TagCount); i++ {
@@ -439,11 +472,14 @@ func (r *MobiReader) parseTagx() error {
 func (r *MobiReader) parseIdxt(IdxtCount uint32) error {
 	//fmt.Println("parseIdxt called")
 	if !r.matchMagic(magicIdxt) {
-		return errors.New("IDXT record not found at given offset.")
+		return errors.New("IDXT record not found at given offset")
 	}
 
 	binary.Read(r.file, binary.BigEndian, &r.Idxt.Identifier)
 
+	if int64(IdxtCount) * 2 > r.fileStat.Size() {
+		return fmt.Errorf("IDXT record count of %d exceeds input file size",IdxtCount)
+	}
 	r.Idxt.Offset = make([]uint16, IdxtCount)
 
 	binary.Read(r.file, binary.BigEndian, &r.Idxt.Offset)
