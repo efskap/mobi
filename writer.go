@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -17,9 +18,10 @@ type MobiWriter struct {
 	timestamp   uint32
 	title       string
 	compression mobiPDHCompression
+	CSS			string
 
 	chapterCount int
-	chapters     []mobiChapter
+	chapters     []MobiChapter
 
 	bookHtml *bytes.Buffer
 
@@ -116,7 +118,9 @@ func (w *MobiWriter) RecordCount() Mint {
 func (w *MobiWriter) Write() {
 	// Generate HTML file
 	w.bookHtml = new(bytes.Buffer)
-	w.bookHtml.WriteString("<html><head></head><body>")
+	w.bookHtml.WriteString("<html><head><style>")
+	w.bookHtml.WriteString(strings.ToValidUTF8(w.CSS, ""))
+	w.bookHtml.WriteString("</style></head><body>")
 	for i := range w.chapters {
 		w.chapters[i].generateHTML(w.bookHtml)
 	}
