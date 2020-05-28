@@ -37,11 +37,11 @@ func (w *MobiChapter) generateHTML(out *bytes.Buffer) {
 	//Add check for unsupported HTML tags, characters, clean up HTML
 	w.RecordOffset = out.Len()
 	Len0 := out.Len()
-	//fmt.Printf("Offset: --- %v %v \n", w.Offset, w.Title)
+	//fmt.Printf("Offset: --- %v %v \n", Len0, w.Title)
 
 	out.WriteString(fmt.Sprintf("<h%d>%s</h%d>", w.Depth, w.Title, w.Depth))
 	out.Write(w.Html)
-	if len(w.Html) > 0 {
+	if len(w.Html) > 2000 {
 		out.WriteString("<mbp:pagebreak/>")
 	}
 	w.Len = out.Len() - Len0

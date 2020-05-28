@@ -106,7 +106,7 @@ func (w *MobiWriter) Compression(i mobiPDHCompression) *MobiWriter {
 
 // AddRecord adds a new record. Returns Id
 func (w *MobiWriter) AddRecord(data []uint8) Mint {
-	//	fmt.Printf("Adding record : %s\n", data)
+	//fmt.Printf("Adding record : %s\n", data)
 	w.Records = append(w.Records, data)
 	return w.RecordCount() - 1
 }
@@ -232,6 +232,8 @@ func (w *MobiWriter) Write() {
 	}
 	for i := 1; i < w.RecordCount().Int(); i++ {
 		_, err := w.file.Write(w.Records[i])
+		//pos, _ := w.file.Seek(0,1)
+		//fmt.Println(pos, w.Records[i] )
 		if err != nil {
 			panic(err)
 		}
