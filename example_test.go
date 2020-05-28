@@ -2,11 +2,11 @@ package mobi_test
 
 import (
 	"fmt"
+	"github.com/efskap/mobi"
 	"strings"
 	"os"
 	"image/jpeg"
 
-	"github.com/sblinch/mobi"
 )
 
 func ExampleNewWriter() {
